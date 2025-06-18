@@ -1946,10 +1946,10 @@ class MCTorsionMove(MetropolizedMove):
     def _torsion_rotation(self, positions):
         # TODO Seeding?
         positions_unit = positions.unit
-        x_initial = positions / positions_unit
+        x_initial = np.matrix(positions / positions_unit)
 
         # Choose a dihedral
-        dihedral_indxs = self._dihedrals(np.random.random_integers(0, len(self._dihedrals)))
+        dihedral_indxs = self._dihedrals[np.random.random_integers(0, len(self._dihedrals)-1)]
 
         # Calculate axis of rotation
         axis = x_initial[dihedral_indxs[2]] - x_initial[dihedral_indxs[1]]
@@ -1965,7 +1965,7 @@ class MCTorsionMove(MetropolizedMove):
         rotate_indxs = self._find_dihedral_group_from_bond_graph(dihedral_indxs, np.random.random()>0.5)
 
         # Make the move
-        x_proposed = np.zeros(np.shape(x_initial))
+        x_proposed = np.copy(x_initial)
         for i in rotate_indxs:
             x_proposed[i] = x_initial[dihedral_indxs[2]] + rot.apply(x_initial[i] - x_initial[dihedral_indxs[2]])
         
@@ -2007,7 +2007,7 @@ class MCTorsionMove(MetropolizedMove):
         return bond_graph
     
     # ChatGPT, looks good
-    def _find_dihedral_groups_from_bond_graph(self, dihedral_atoms, first_group):
+    def _find_dihedral_group_from_bond_graph(self, dihedral_atoms, first_group):
         atom1, atom2, atom3, atom4 = dihedral_atoms
         group = []
 
