@@ -125,6 +125,7 @@ except ImportError:  # OpenMM < 7.6
 
 from openmmtools import integrators, cache, utils
 from openmmtools.utils import SubhookedABCMeta, Timer
+from scipy.spatial.transform import Rotation
 
 logger = logging.getLogger(__name__)
 
@@ -1910,6 +1911,132 @@ class MCRotationMove(MetropolizedMove):
         """Implement MetropolizedMove._propose_positions for apply()"""
         return self.rotate_positions(initial_positions)
 
+# =============================================================================
+# TORSIONAL ROTATION MOVE
+# =============================================================================   
+
+class MCTorsionMove(MetropolizedMove):
+    """A metropolized move that randomly rotate a torsional angle.
+
+    Parameters
+    ----------
+    atoms : slice or list of int, optional
+        TODO Apply only along set torsional angles
+
+    Attributes
+    ----------
+    n_accepted : int
+        The number of proposals accepted.
+    n_proposed : int
+        The total number of attempted moves.
+    atom_subset
+
+    See Also
+    --------
+    MetropolizedMove
+
+    """
+
+    def __init__(self, system, dihedrals, rotation_bounds = [-np.pi, np.pi], **kwargs):
+        super(MCTorsionMove, self).__init__(**kwargs)
+        self._bond_graph = self._build_bond_graph(system)
+        self._dihedrals = dihedrals # TODO Make function to automatically determine these?
+        self._rotation_bounds = rotation_bounds
+
+    def _torsion_rotation(self, positions):
+        # TODO Seeding?
+        positions_unit = positions.unit
+        x_initial = positions / positions_unit
+
+        # Choose a dihedral
+        dihedral_indxs = self._dihedrals(np.random.random_integers(0, len(self._dihedrals)))
+
+        # Calculate axis of rotation
+        axis = x_initial[dihedral_indxs[2]] - x_initial[dihedral_indxs[1]]
+        axis /= np.linalg.norm(axis)
+
+        # Randomly choose angle change
+        angle_change = np.random.uniform(self._rotation_bounds[0], self._rotation_bounds[1])
+
+        # Set up rotator
+        rot = Rotation.from_rotvec(angle_change * axis)
+
+        # Determine the groups being rotated
+        rotate_indxs = self._find_dihedral_group_from_bond_graph(dihedral_indxs, np.random.random()>0.5)
+
+        # Make the move
+        x_proposed = np.zeros(np.shape(x_initial))
+        for i in rotate_indxs:
+            x_proposed[i] = x_initial[dihedral_indxs[2]] + rot.apply(x_initial[i] - x_initial[dihedral_indxs[2]])
+        
+        return unit.Quantity(x_proposed, positions_unit)
+    
+    def _propose_positions(self, initial_positions):
+        """Implement MetropolizedMove._propose_positions for apply()"""
+        return self._torsion_rotation(initial_positions)
+    
+    @staticmethod
+    def _build_bond_graph(system):
+        num_particles = system.getNumParticles()
+        bond_graph = [[] for _ in range(num_particles)]
+
+        # Add constraints as bonds
+        for i in range(system.getNumConstraints()):
+            p1, p2, _ = system.getConstraintParameters(i)
+            bond_graph[p1].append(p2)
+            bond_graph[p2].append(p1)
+
+        # Add bonded force terms
+        for force_index in range(system.getNumForces()):
+            force = system.getForce(force_index)
+            if isinstance(force, openmm.HarmonicBondForce):
+                for i in range(force.getNumBonds()):
+                    p1, p2, _, _ = force.getBondParameters(i)
+                    bond_graph[p1].append(p2)
+                    bond_graph[p2].append(p1)
+
+        # Add virtual site connections
+        for i in range(num_particles):
+            if system.isVirtualSite(i):
+                vs = system.getVirtualSite(i)
+                for j in range(vs.getNumParticles()):
+                    real_atom = vs.getParticle(j)
+                    bond_graph[i].append(real_atom)
+                    bond_graph[real_atom].append(i)
+
+        return bond_graph
+    
+    # ChatGPT, looks good
+    def _find_dihedral_groups_from_bond_graph(self, dihedral_atoms, first_group):
+        atom1, atom2, atom3, atom4 = dihedral_atoms
+        group = []
+
+        # Cut bond between atom2 and atom3
+        try:
+            self._bond_graph[atom2].remove(atom3)
+            self._bond_graph[atom3].remove(atom2)
+
+            # DFS
+            def dfs(start_atom):
+                visited = set()
+                stack = [start_atom]
+                while stack:
+                    atom = stack.pop()
+                    if atom not in visited:
+                        visited.add(atom)
+                        stack.extend(self._bond_graph[atom])
+                return visited
+            if first_group:
+                group = dfs(atom2)
+            else:
+                group = dfs(atom3)
+
+        finally:
+            # Restore bond after DFS
+            self._bond_graph[atom2].append(atom3)
+            self._bond_graph[atom3].append(atom2)
+
+        return group
 
 # =============================================================================
 # MAIN AND TESTS
